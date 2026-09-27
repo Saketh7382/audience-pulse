@@ -144,7 +144,8 @@ class AnalysisRepository:
                     await session.execute(
                         text(
                             "SELECT id, title, release_date, campaign_start_date, "
-                            "entities, created_at, updated_at FROM projects WHERE id = :id"
+                            "entities, created_at, updated_at FROM projects "
+                            "WHERE id = :id"
                         ),
                         {"id": project_id},
                     )
@@ -212,7 +213,8 @@ class AnalysisRepository:
                     await session.execute(
                         text(
                             "SELECT id, project_id, status, active_channels, "
-                            "collection_since, collection_until, triggered_at, completed_at "
+                            "collection_since, collection_until, triggered_at, "
+                            "completed_at "
                             "FROM project_runs WHERE id = :run_id"
                         ),
                         {"run_id": collection_run_id},
@@ -229,8 +231,10 @@ class AnalysisRepository:
                 (
                     await session.execute(
                         text(
-                            "SELECT m.platform, rm.collection_tier, count(*) AS mentions "
-                            "FROM run_mentions rm JOIN mentions m ON m.id = rm.mention_id "
+                            "SELECT m.platform, rm.collection_tier, count(*) "
+                            "AS mentions "
+                            "FROM run_mentions rm JOIN mentions m "
+                            "ON m.id = rm.mention_id "
                             "WHERE rm.run_id = :run_id "
                             "GROUP BY m.platform, rm.collection_tier "
                             "ORDER BY m.platform, rm.collection_tier"
@@ -254,7 +258,8 @@ class AnalysisRepository:
                         text(
                             "SELECT m.id AS mention_id, m.asset_id, m.platform, "
                             "m.record_type, m.text, m.published_at, m.metrics, "
-                            "rm.collection_tier, ha.asset_type, ha.title AS asset_title, "
+                            "rm.collection_tier, ha.asset_type, "
+                            "ha.title AS asset_title, "
                             "ha.url AS asset_url, ha.source_name "
                             "FROM run_mentions rm "
                             "JOIN mentions m ON m.id = rm.mention_id "
@@ -318,7 +323,8 @@ class AnalysisRepository:
         )
         if result is None:
             raise AnalysisInputError(
-                f"Collection run {collection_run_id} was not found for project {project_id}"
+                f"Collection run {collection_run_id} was not found for "
+                f"project {project_id}"
             )
         if int(result["incomplete"] or 0) > 0:
             raise AnalysisInputError(

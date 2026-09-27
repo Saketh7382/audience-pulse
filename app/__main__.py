@@ -4,7 +4,7 @@ import uuid
 
 from app.core.config import get_settings
 from app.core.logging import configure_logging
-from app.worker import run_local, run_worker
+from app.worker import enqueue_run, run_local, run_worker
 
 
 def parse_args() -> argparse.Namespace:
@@ -12,6 +12,11 @@ def parse_args() -> argparse.Namespace:
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument(
         "--worker", action="store_true", help="Consume analysis jobs from Redis"
+    )
+    mode.add_argument(
+        "--enqueue-run-id",
+        type=uuid.UUID,
+        help="Create metadata and enqueue one completed collection run",
     )
     mode.add_argument(
         "--run-id",
@@ -42,6 +47,12 @@ async def main() -> None:
     configure_logging(settings.log_level, settings.log_format)
     if args.worker:
         await run_worker(settings, once=args.once)
+        return
+    if args.enqueue_run_id:
+        analysis_run_id = await enqueue_run(
+            settings, collection_run_id=args.enqueue_run_id
+        )
+        print(f"Analysis queued: {analysis_run_id}")
         return
     analysis_run_id = await run_local(
         settings,

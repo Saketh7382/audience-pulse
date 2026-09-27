@@ -46,6 +46,7 @@ class WorkerResources:
             app_name=settings.openrouter_app_name,
             timeout_seconds=settings.openrouter_timeout_seconds,
             max_retries=settings.openrouter_max_retries,
+            max_output_tokens=settings.openrouter_max_output_tokens,
         )
         self.pipeline = AnalysisPipeline(
             settings=settings,
@@ -131,3 +132,53 @@ async def run_local(
         return resolved_analysis_id
     finally:
         await resources.close()
+
+
+async def enqueue_run(
+    settings: Settings,
+    *,
+    collection_run_id: uuid.UUID,
+) -> uuid.UUID:
+    """Create analysis metadata and publish the same job expected from Control Plane."""
+    database = Database(settings.database_url)
+    repository = AnalysisRepository(database.sessions)
+    redis = Redis.from_url(settings.redis_url, decode_responses=True)
+    analysis_run_id: uuid.UUID | None = None
+    try:
+        project_id = await repository.collection_run_project_id(collection_run_id)
+        analysis_run_id = uuid.uuid4()
+        store = LocalAnalysisStore(settings.analyzer_storage_root)
+        paths = store.paths(
+            project_id=project_id,
+            collection_run_id=collection_run_id,
+            analysis_run_id=analysis_run_id,
+        )
+        await repository.create(
+            analysis_run_id=analysis_run_id,
+            project_id=project_id,
+            collection_run_id=collection_run_id,
+            manifest_path=store.relative(paths.manifest),
+            analyzer_version=settings.analyzer_version,
+            prompt_bundle_version=settings.prompt_bundle_version,
+        )
+        job = AnalysisJob(
+            analysis_run_id=analysis_run_id,
+            collection_run_id=collection_run_id,
+            project_id=project_id,
+        )
+        await redis.xadd(
+            settings.redis_analysis_job_stream,
+            {"payload": job.model_dump_json()},
+            maxlen=settings.redis_stream_maxlen,
+            approximate=True,
+        )
+        return analysis_run_id
+    except Exception as exc:
+        if analysis_run_id is not None:
+            await repository.mark_failed(
+                analysis_run_id, f"Unable to dispatch analysis job: {exc}"
+            )
+        raise
+    finally:
+        await database.close()
+        await redis.aclose()

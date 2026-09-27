@@ -21,12 +21,13 @@ class Settings(BaseSettings):
     openrouter_app_name: str = "Muvion Audience Pulse"
     openrouter_timeout_seconds: float = Field(default=120, gt=0)
     openrouter_max_retries: int = Field(default=3, ge=1, le=10)
+    openrouter_max_output_tokens: int = Field(default=32768, ge=256, le=65536)
 
     analyzer_mention_model: str = "google/gemini-3.5-flash-lite"
     analyzer_theme_model: str = "google/gemini-3.5-flash"
     analyzer_narrative_model: str = "google/gemini-3.5-flash"
     analyzer_synthesis_model: str = "google/gemini-3.5-flash"
-    analyzer_fallback_models: list[str] = ["openai/gpt-5-mini"]
+    analyzer_fallback_models: str = "openai/gpt-5-mini"
     analyzer_mention_batch_size: int = Field(default=25, ge=1, le=200)
     analyzer_storage_root: Path = Path(".analyzer-data")
     analyzer_version: str = "0.1.0"
@@ -76,12 +77,13 @@ class Settings(BaseSettings):
             raise ValueError("LOG_FORMAT must be human or json")
         return normalized
 
-    @field_validator("analyzer_fallback_models", mode="before")
-    @classmethod
-    def parse_fallback_models(cls, value: object) -> object:
-        if isinstance(value, str):
-            return [part.strip() for part in value.split(",") if part.strip()]
-        return value
+    @property
+    def analyzer_fallback_model_list(self) -> list[str]:
+        return [
+            part.strip()
+            for part in self.analyzer_fallback_models.split(",")
+            if part.strip()
+        ]
 
 
 @lru_cache

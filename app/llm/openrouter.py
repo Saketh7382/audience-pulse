@@ -33,9 +33,11 @@ class OpenRouterProvider(StructuredLLMProvider):
         app_name: str,
         timeout_seconds: float,
         max_retries: int,
+        max_output_tokens: int = 32768,
         client: httpx.AsyncClient | None = None,
     ) -> None:
         self.max_retries = max_retries
+        self.max_output_tokens = max_output_tokens
         self._owns_client = client is None
         self.client = client or httpx.AsyncClient(
             base_url=base_url.rstrip("/"),
@@ -67,6 +69,7 @@ class OpenRouterProvider(StructuredLLMProvider):
                 {"role": "user", "content": user_prompt},
             ],
             "temperature": 0,
+            "max_tokens": self.max_output_tokens,
             "response_format": {
                 "type": "json_schema",
                 "json_schema": {

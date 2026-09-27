@@ -71,6 +71,15 @@ class AnalysisPipeline:
         self.report_progress = report_progress
 
     async def run(self, job: AnalysisJob) -> Path:
+        metadata = await self.repository.get(job.analysis_run_id)
+        if metadata is None:
+            raise RuntimeError(f"Analysis run {job.analysis_run_id} was not found")
+        if (
+            metadata.project_id != job.project_id
+            or metadata.collection_run_id != job.collection_run_id
+        ):
+            raise RuntimeError("Analysis job identity does not match database metadata")
+
         paths = self.store.paths(
             project_id=job.project_id,
             collection_run_id=job.collection_run_id,
@@ -229,6 +238,7 @@ class AnalysisPipeline:
         collection_path = paths.input / "collection_summary.json"
         mentions_path = paths.input / "mentions.jsonl"
         if self._stage_completed(manifest, stage):
+            _verify_input_checksums(paths.input)
             return (
                 self.store.read_json(project_path),
                 self.store.read_json(collection_path),
@@ -325,7 +335,7 @@ class AnalysisPipeline:
                 generated = await self.llm.generate_structured(
                     stage=stage,
                     model=self.settings.analyzer_mention_model,
-                    fallback_models=self.settings.analyzer_fallback_models,
+                    fallback_models=self.settings.analyzer_fallback_model_list,
                     system_prompt=MENTION_SYSTEM_PROMPT,
                     user_prompt=mention_prompt(batch),
                     response_model=MentionAnalysisBatch,
@@ -575,7 +585,7 @@ class AnalysisPipeline:
             generated = await self.llm.generate_structured(
                 stage=stage_key,
                 model=self.settings.analyzer_narrative_model,
-                fallback_models=self.settings.analyzer_fallback_models,
+                fallback_models=self.settings.analyzer_fallback_model_list,
                 system_prompt=evidence_system_prompt("trend and momentum analysis"),
                 user_prompt=structured_context_prompt(
                     {
@@ -584,7 +594,8 @@ class AnalysisPipeline:
                         "current_selected_evidence": evidence,
                     },
                     "Interpret only meaningful increases, decreases, appearances, "
-                    "disappearances, and direction changes. Do not restate every delta.",
+                    "disappearances, and direction changes. Do not restate "
+                    "every delta.",
                 ),
                 response_model=TrendResult,
             )
@@ -631,7 +642,10 @@ class AnalysisPipeline:
                     next_actions=[
                         "Collect more audience conversation before interpretation."
                     ],
-                    summary="No audience mentions were available for this collection run.",
+                    summary=(
+                        "No audience mentions were available for this "
+                        "collection run."
+                    ),
                 ),
             )
             output = paths.stages / "07_synthesis" / "result.json"
@@ -716,7 +730,7 @@ class AnalysisPipeline:
             generated = await self.llm.generate_structured(
                 stage=key,
                 model=model,
-                fallback_models=self.settings.analyzer_fallback_models,
+                fallback_models=self.settings.analyzer_fallback_model_list,
                 system_prompt=evidence_system_prompt(responsibility),
                 user_prompt=structured_context_prompt(context, task),
                 response_model=response_model,
@@ -956,7 +970,13 @@ class AnalysisPipeline:
                 progress_pct=progress,
                 processed_mentions=manifest.completed_mentions,
                 total_mentions=manifest.input_mentions,
-                manifest_path=None,
+                manifest_path=self.store.relative(
+                    self.store.paths(
+                        project_id=job.project_id,
+                        collection_run_id=job.collection_run_id,
+                        analysis_run_id=job.analysis_run_id,
+                    ).manifest
+                ),
                 final_result_path=final_result_path,
                 executive_report_path=executive_report_path,
                 error_message=error_message,
@@ -984,6 +1004,19 @@ def _sha256(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _verify_input_checksums(input_directory: Path) -> None:
+    checksum_path = input_directory / "checksums.json"
+    if not checksum_path.exists():
+        raise RuntimeError("Completed snapshot is missing checksums.json")
+    import json
+
+    expected = json.loads(checksum_path.read_text(encoding="utf-8"))
+    for filename, checksum in expected.items():
+        path = input_directory / filename
+        if not path.exists() or _sha256(path) != checksum:
+            raise RuntimeError(f"Immutable analysis input changed: {filename}")
 
 
 def _build_trend_context(

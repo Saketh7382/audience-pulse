@@ -32,6 +32,10 @@ class FakeRepository:
         self.progress = []
         self.completed = None
         self.failed = None
+        self.metadata = None
+
+    async def get(self, analysis_run_id):
+        return self.metadata
 
     async def project_snapshot(self, project_id):
         return {
@@ -171,18 +175,23 @@ async def test_pipeline_writes_final_files_and_resumes_without_more_llm_calls(tm
         analyzer_storage_root=tmp_path,
         analyzer_mention_batch_size=1,
     )
+    job = AnalysisJob(
+        analysis_run_id=uuid.uuid4(),
+        collection_run_id=uuid.uuid4(),
+        project_id=uuid.uuid4(),
+    )
+    from types import SimpleNamespace
+
+    repository.metadata = SimpleNamespace(
+        project_id=job.project_id,
+        collection_run_id=job.collection_run_id,
+    )
     pipeline = AnalysisPipeline(
         settings=settings,
         repository=repository,
         store=LocalAnalysisStore(tmp_path),
         llm=llm,
     )
-    job = AnalysisJob(
-        analysis_run_id=uuid.uuid4(),
-        collection_run_id=uuid.uuid4(),
-        project_id=uuid.uuid4(),
-    )
-
     result_path = await pipeline.run(job)
     call_count = len(llm.calls)
     second_path = await pipeline.run(job)

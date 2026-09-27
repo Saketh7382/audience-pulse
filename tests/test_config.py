@@ -12,7 +12,20 @@ def test_settings_normalize_database_and_fallback_models():
     )
 
     assert settings.database_url.startswith("postgresql+asyncpg://")
-    assert settings.analyzer_fallback_models == [
+    assert settings.analyzer_fallback_model_list == [
+        "openai/gpt-5-mini",
+        "anthropic/claude-sonnet-4.5",
+    ]
+
+
+def test_fallback_models_parse_from_comma_separated_environment(monkeypatch):
+    monkeypatch.setenv(
+        "ANALYZER_FALLBACK_MODELS",
+        "openai/gpt-5-mini,anthropic/claude-sonnet-4.5",
+    )
+    settings = Settings(openrouter_api_key="secret", _env_file=None)
+
+    assert settings.analyzer_fallback_model_list == [
         "openai/gpt-5-mini",
         "anthropic/claude-sonnet-4.5",
     ]

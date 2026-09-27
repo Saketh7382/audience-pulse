@@ -1,15 +1,18 @@
 # Muvion Audience Pulse
 
-`audience-pulse` is the analysis boundary between harvested audience conversation
-and Muvion's Release Pulse intelligence. It reads one completed collection run,
-freezes the exact project/assets/mentions used for analysis, and progressively
-produces evidence-backed structured files.
+`audience-pulse` is the independent analysis service between harvested audience
+conversation and Muvion's Release Pulse intelligence. It freezes one completed
+collection run, analyzes it through small evidence-backed stages, and writes
+structured files for the business/reporting layer.
 
-The service deliberately separates three responsibilities:
+## Responsibilities
 
-- PostgreSQL stores analysis lifecycle metadata and relative file paths only.
-- Local files store immutable inputs, intermediate batches, and final outputs.
-- OpenRouter supplies model-independent structured LLM inference.
+- PostgreSQL stores analysis lifecycle metadata, versions, counts, usage, and
+  relative file paths only.
+- Local files store immutable inputs, completed mention batches, intermediate
+  intelligence, final JSON, final Markdown, evidence, and model usage.
+- OpenRouter supplies provider-neutral structured inference.
+- Python calculates counts, percentages, rankings, and changes without an LLM.
 
 ## Alpha pipeline
 
@@ -20,27 +23,27 @@ run_mentions snapshot
   -> themes (LLM)
   -> asset and talent response (LLM)
   -> narratives and signals (LLM)
-  -> trends against the previous completed analysis (Python + LLM)
-  -> recommendations and executive pulse (LLM)
+  -> trends against the previous Pulse (Python + LLM)
+  -> recommendations and Executive Pulse (LLM)
   -> final JSON, Markdown, evidence JSONL, and usage JSON
 ```
 
 Original audience text is analyzed directly. Indian-language, transliterated,
-slang, emoji, and code-mixed text is never translated before classification.
-The optional English normalized meaning is generated alongside—not instead of—
-the original.
+slang, emoji, and code-mixed text is never translated before classification. An
+optional normalized English meaning accompanies the original understanding.
 
-## Storage boundary
+## Models through OpenRouter
 
-By default, run files live below `.analyzer-data/`, which is intentionally ignored
-by Git. The database records paths relative to `ANALYZER_STORAGE_ROOT`, keeping
-metadata portable between machines.
+Every stage accepts an arbitrary OpenRouter model slug. Alpha defaults are:
 
-Local storage is an alpha deployment choice. Run a single worker, or place
-`ANALYZER_STORAGE_ROOT` on a shared mounted volume before adding workers on
-different machines.
+- mention understanding: `google/gemini-3.5-flash-lite`
+- themes, narratives, trends, and synthesis: `google/gemini-3.5-flash`
+- cross-provider fallback: `openai/gpt-5-mini`
 
-## Setup
+Configure any other model by changing the stage environment variables. Business
+logic does not import a Google, OpenAI, or Anthropic SDK.
+
+## Quick start
 
 Python 3.11 or later is required.
 
@@ -53,23 +56,40 @@ alembic upgrade head
 python -m app --worker
 ```
 
-For a direct local execution without Redis:
+Queue a completed collection run for the worker:
+
+```bash
+python -m app --enqueue-run-id COLLECTION_RUN_UUID
+```
+
+Or run it directly without Redis:
 
 ```bash
 python -m app --run-id COLLECTION_RUN_UUID
 ```
 
-The local command creates an analysis run, freezes its input, and executes the
-same resumable pipeline used by the Redis worker.
+Resume a specific attempt:
 
-## OpenRouter models
+```bash
+python -m app --run-id COLLECTION_RUN_UUID --analysis-run-id ANALYSIS_RUN_UUID
+```
 
-Every stage accepts an arbitrary OpenRouter model slug. Alpha defaults are:
+Run tests without spending OpenRouter credit:
 
-- mention understanding: `google/gemini-3.5-flash-lite`
-- themes, narrative and synthesis: `google/gemini-3.5-flash`
-- optional fallback: `openai/gpt-5-mini`
+```bash
+pytest -q
+```
 
-No business logic imports a provider-specific SDK. Model routing is configuration,
-so a later admin-facing policy can select a different provider/model by stage.
+## Storage
 
+The default root is `.analyzer-data/`, ignored by Git. Database paths are relative
+to `ANALYZER_STORAGE_ROOT`, making them portable. Local storage is an alpha
+choice: use one worker, or a shared mounted volume before running workers across
+multiple machines.
+
+## Documentation
+
+- [Architecture](docs/architecture.md)
+- [File contracts](docs/file-contracts.md)
+- [Redis contracts](docs/redis-contracts.md)
+- [Operations](docs/operations.md)

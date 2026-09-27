@@ -60,3 +60,13 @@ def test_run_lock_rejects_concurrent_owner(tmp_path):
                 raise AssertionError("second lock should not be acquired")
         except RuntimeError as exc:
             assert "already active" in str(exc)
+
+
+def test_relative_path_resolution_cannot_escape_storage_root(tmp_path):
+    store = LocalAnalysisStore(tmp_path)
+
+    try:
+        store.resolve_relative("../outside.json")
+        raise AssertionError("path traversal should fail")
+    except ValueError as exc:
+        assert "escapes" in str(exc)
