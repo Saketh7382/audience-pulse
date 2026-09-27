@@ -15,7 +15,7 @@ class Settings(BaseSettings):
     )
     redis_url: str = "redis://localhost:6379/0"
 
-    openrouter_api_key: SecretStr
+    openrouter_api_key: SecretStr | None = None
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
     openrouter_site_url: str = "http://localhost"
     openrouter_app_name: str = "Muvion Audience Pulse"
