@@ -121,6 +121,22 @@ class AnalysisRepository:
             row.completed_at = datetime.now(timezone.utc)
             await session.commit()
 
+    async def collection_run_project_id(
+        self, collection_run_id: uuid.UUID
+    ) -> uuid.UUID:
+        async with self.sessions() as session:
+            project_id = (
+                await session.execute(
+                    text("SELECT project_id FROM project_runs WHERE id = :run_id"),
+                    {"run_id": collection_run_id},
+                )
+            ).scalar_one_or_none()
+            if project_id is None:
+                raise AnalysisInputError(
+                    f"Collection run {collection_run_id} was not found"
+                )
+            return project_id
+
     async def project_snapshot(self, project_id: uuid.UUID) -> dict[str, Any]:
         async with self.sessions() as session:
             project = (
