@@ -155,7 +155,7 @@ class EvidenceBackedFinding(StrictModel):
     interpretation: str
     importance: Literal["low", "medium", "high", "critical"]
     sentiment: Sentiment | None = None
-    supporting_mention_ids: list[uuid.UUID]
+    supporting_mention_ids: list[uuid.UUID] = Field(min_length=1)
     supporting_asset_ids: list[uuid.UUID] = Field(default_factory=list)
     supporting_platforms: list[str] = Field(default_factory=list)
 
@@ -170,7 +170,7 @@ class EntityResponse(StrictModel):
     observation: str
     interpretation: str
     sentiment: Sentiment
-    supporting_mention_ids: list[uuid.UUID]
+    supporting_mention_ids: list[uuid.UUID] = Field(min_length=1)
 
 
 class AssetTalentResult(StrictModel):
@@ -179,7 +179,7 @@ class AssetTalentResult(StrictModel):
 
 
 class NarrativeSignalResult(StrictModel):
-    audience_narrative: EvidenceBackedFinding
+    audience_narrative: EvidenceBackedFinding | None = None
     strengths: list[EvidenceBackedFinding]
     concerns: list[EvidenceBackedFinding]
     opportunities: list[EvidenceBackedFinding]
@@ -208,7 +208,7 @@ class StrategicRecommendation(StrictModel):
     interpretation: str
     opportunity_or_risk: str
     recommended_action: str
-    supporting_mention_ids: list[uuid.UUID]
+    supporting_mention_ids: list[uuid.UUID] = Field(min_length=1)
 
 
 class ExecutivePulseResult(StrictModel):

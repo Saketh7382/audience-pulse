@@ -66,6 +66,16 @@ class LocalAnalysisStore:
     def relative(self, path: Path) -> str:
         return str(path.resolve().relative_to(self.root))
 
+    def resolve_relative(self, relative_path: str) -> Path:
+        candidate = (self.root / relative_path).resolve()
+        try:
+            candidate.relative_to(self.root)
+        except ValueError as exc:
+            raise ValueError(
+                "Analysis path escapes the configured storage root"
+            ) from exc
+        return candidate
+
     def write_json(self, path: Path, value: BaseModel | dict | list) -> None:
         payload = (
             value.model_dump(mode="json") if isinstance(value, BaseModel) else value
