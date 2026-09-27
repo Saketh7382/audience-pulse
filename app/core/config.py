@@ -11,8 +11,7 @@ class Settings(BaseSettings):
     log_format: str = "human"
 
     database_url: str = (
-        "postgresql+asyncpg://postgres:postgres@localhost:5432/"
-        "audience_intelligence"
+        "postgresql+asyncpg://postgres:postgres@localhost:5432/" "audience_intelligence"
     )
     redis_url: str = "redis://localhost:6379/0"
 
@@ -36,9 +35,7 @@ class Settings(BaseSettings):
     redis_analysis_job_stream: str = "audience:analysis:jobs"
     redis_analysis_event_stream: str = "audience:analysis:events"
     redis_analysis_consumer_group: str = "audience-pulse-workers"
-    redis_analysis_dead_letter_stream: str = (
-        "audience:analysis:jobs:dead-letter"
-    )
+    redis_analysis_dead_letter_stream: str = "audience:analysis:jobs:dead-letter"
     redis_stream_maxlen: int = Field(default=1000, gt=0)
     redis_block_ms: int = Field(default=5000, gt=0)
     redis_batch_size: int = Field(default=1, gt=0, le=100)
@@ -90,4 +87,3 @@ class Settings(BaseSettings):
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
-

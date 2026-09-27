@@ -7,7 +7,9 @@ from typing import Any
 class JsonFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
         payload: dict[str, Any] = {
-            "timestamp": datetime.fromtimestamp(record.created).astimezone().isoformat(),
+            "timestamp": datetime.fromtimestamp(record.created)
+            .astimezone()
+            .isoformat(),
             "level": record.levelname,
             "logger": record.name,
             "message": record.getMessage(),
@@ -33,4 +35,3 @@ def configure_logging(level: str, output_format: str) -> None:
     # details remain available when the service itself runs at DEBUG.
     for dependency in ("httpx", "httpcore", "redis", "sqlalchemy", "asyncio"):
         logging.getLogger(dependency).setLevel(logging.WARNING)
-
