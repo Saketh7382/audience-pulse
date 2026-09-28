@@ -47,6 +47,7 @@ from app.pipeline.evidence import (
 )
 from app.pipeline.report import executive_markdown
 from app.storage.local import LocalAnalysisStore, RunPaths
+from app.storage.mention_cache import MentionAnalysisCache
 
 logger = logging.getLogger(__name__)
 T = TypeVar("T", bound=BaseModel)
@@ -69,6 +70,12 @@ class AnalysisPipeline:
         self.repository = repository
         self.store = store
         self.llm = llm
+        self.mention_cache = MentionAnalysisCache(
+            store,
+            analyzer_version=settings.analyzer_version,
+            prompt_bundle_version=settings.prompt_bundle_version,
+            requested_model=settings.analyzer_mention_model,
+        )
         self.report_progress = report_progress
 
     async def run(self, job: AnalysisJob) -> Path:
@@ -329,6 +336,24 @@ class AnalysisPipeline:
             5,
         )
 
+        snapshots_by_id = {item.mention_id: item for item in snapshots}
+        cached_by_id = {
+            snapshot.mention_id: cached
+            for snapshot in snapshots
+            if (cached := self.mention_cache.get(snapshot)) is not None
+        }
+        manifest.mention_cache_hits = len(cached_by_id)
+        manifest.mention_cache_misses = len(snapshots) - len(cached_by_id)
+        manifest.updated_at = datetime.now(timezone.utc)
+        self.store.save_manifest(paths, manifest)
+        if cached_by_id:
+            logger.info(
+                "Reusing prior analysis for %s mentions; %s new mentions require "
+                "model processing.",
+                len(cached_by_id),
+                manifest.mention_cache_misses,
+            )
+
         all_analyses: list[MentionAnalysis] = []
         for index, start in enumerate(range(0, len(snapshots), batch_size), start=1):
             batch = snapshots[start : start + batch_size]
@@ -340,6 +365,10 @@ class AnalysisPipeline:
                     for item in self.store.iter_jsonl(output_path)
                 ]
                 _validate_batch_ids(completed, expected_ids)
+                for analysis in completed:
+                    self.mention_cache.put(
+                        snapshots_by_id[analysis.mention_id], analysis
+                    )
                 logger.info(
                     "Mention batch %s of %s is already complete; reusing it.",
                     index,
@@ -348,7 +377,11 @@ class AnalysisPipeline:
             else:
                 logger.info("Analyzing mention batch %s of %s.", index, total_batches)
                 partial_path = directory / f"batch-{index:06d}.partial.jsonl"
-                completed_by_id: dict[uuid.UUID, MentionAnalysis] = {}
+                completed_by_id: dict[uuid.UUID, MentionAnalysis] = {
+                    item.mention_id: cached_by_id[item.mention_id]
+                    for item in batch
+                    if item.mention_id in cached_by_id
+                }
                 if partial_path.exists():
                     partial = [
                         MentionAnalysis.model_validate(item)
@@ -388,6 +421,9 @@ class AnalysisPipeline:
                     for analysis in generated.value.analyses:
                         if analysis.mention_id in expected_ids:
                             completed_by_id.setdefault(analysis.mention_id, analysis)
+                            self.mention_cache.put(
+                                snapshots_by_id[analysis.mention_id], analysis
+                            )
                     completed = [
                         completed_by_id[item.mention_id]
                         for item in batch
@@ -897,6 +933,10 @@ class AnalysisPipeline:
             "analyzer_version": manifest.analyzer_version,
             "prompt_bundle_version": manifest.prompt_bundle_version,
             "generated_at": datetime.now(timezone.utc).isoformat(),
+            "mention_analysis_cache": {
+                "hits": manifest.mention_cache_hits,
+                "misses": manifest.mention_cache_misses,
+            },
             "collection_summary": collection,
             "aggregation": aggregation.model_dump(mode="json"),
             "themes": themes.model_dump(mode="json"),

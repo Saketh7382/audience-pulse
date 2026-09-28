@@ -233,3 +233,29 @@ async def test_pipeline_writes_final_files_and_resumes_without_more_llm_calls(tm
             "*.partial.jsonl"
         )
     )
+
+    # A different analysis run over the same immutable mention reuses the cached
+    # mention result but still regenerates project-level intelligence.
+    second_job = AnalysisJob(
+        analysis_run_id=uuid.uuid4(),
+        collection_run_id=uuid.uuid4(),
+        project_id=job.project_id,
+    )
+    repository.metadata = SimpleNamespace(
+        project_id=second_job.project_id,
+        collection_run_id=second_job.collection_run_id,
+        collection_run_ids=second_job.collection_run_ids,
+    )
+    second_llm = FakeLLM(mention.mention_id)
+    second_pipeline = AnalysisPipeline(
+        settings=settings,
+        repository=repository,
+        store=LocalAnalysisStore(tmp_path),
+        llm=second_llm,
+    )
+    cached_result_path = await second_pipeline.run(second_job)
+    cached_result = json.loads(cached_result_path.read_text())
+
+    assert second_llm.mention_calls == 0
+    assert len(second_llm.calls) == 4
+    assert cached_result["mention_analysis_cache"] == {"hits": 1, "misses": 0}

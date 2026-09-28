@@ -256,6 +256,8 @@ class AnalysisManifest(StrictModel):
     current_stage: str = "INITIALIZING"
     input_mentions: int = Field(default=0, ge=0)
     completed_mentions: int = Field(default=0, ge=0)
+    mention_cache_hits: int = Field(default=0, ge=0)
+    mention_cache_misses: int = Field(default=0, ge=0)
     stages: dict[str, StageManifest] = Field(default_factory=dict)
     model_usage: list[ModelUsageEntry] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))

@@ -85,6 +85,23 @@ Run tests without spending OpenRouter credit:
 pytest -q
 ```
 
+## Mention-analysis cost cache
+
+The expensive per-mention structured result is cached below
+`.analyzer-data/cache/mention-analysis/`. Cache entries are isolated by analyzer
+version, prompt-bundle version, and requested model, and each entry includes a
+fingerprint of the immutable mention snapshot.
+
+A later analysis reuses matching mention results without an OpenRouter call and
+runs the model only for new or changed mentions. Project-level themes, narrative,
+asset/talent interpretation, and synthesis still run for every analysis so their
+conclusions reflect the complete selected dataset. Cache hit and miss counts are
+written to the manifest and final `audience_pulse.json`.
+
+Changing `ANALYZER_VERSION`, `PROMPT_BUNDLE_VERSION`, or
+`ANALYZER_MENTION_MODEL` creates a new cache namespace instead of silently
+reusing results produced under a different analytical contract.
+
 ## Storage
 
 The default root is `.analyzer-data/`, ignored by Git. Database paths are relative
