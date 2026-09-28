@@ -29,6 +29,7 @@ class Settings(BaseSettings):
     analyzer_synthesis_model: str = "google/gemini-3.5-flash"
     analyzer_fallback_models: str = "openai/gpt-5-mini"
     analyzer_mention_batch_size: int = Field(default=25, ge=1, le=200)
+    analyzer_mention_batch_max_attempts: int = Field(default=3, ge=1, le=10)
     analyzer_storage_root: Path = Path(".analyzer-data")
     analyzer_version: str = "0.1.0"
     prompt_bundle_version: str = "v1"

@@ -36,6 +36,7 @@ from app.llm.prompts import (
     MENTION_SYSTEM_PROMPT,
     evidence_system_prompt,
     mention_prompt,
+    mention_retry_prompt,
     structured_context_prompt,
 )
 from app.pipeline.aggregation import aggregate_mentions, distribution_map
@@ -74,10 +75,9 @@ class AnalysisPipeline:
         metadata = await self.repository.get(job.analysis_run_id)
         if metadata is None:
             raise RuntimeError(f"Analysis run {job.analysis_run_id} was not found")
-        if (
-            metadata.project_id != job.project_id
-            or metadata.collection_run_id != job.collection_run_id
-        ):
+        if metadata.project_id != job.project_id or set(
+            metadata.collection_run_ids
+        ) != set(job.collection_run_ids):
             raise RuntimeError("Analysis job identity does not match database metadata")
 
         paths = self.store.paths(
@@ -214,6 +214,7 @@ class AnalysisPipeline:
             manifest = AnalysisManifest(
                 analysis_run_id=job.analysis_run_id,
                 collection_run_id=job.collection_run_id,
+                collection_run_ids=job.collection_run_ids,
                 project_id=job.project_id,
                 analyzer_version=self.settings.analyzer_version,
                 prompt_bundle_version=self.settings.prompt_bundle_version,
@@ -221,7 +222,7 @@ class AnalysisPipeline:
             self.store.save_manifest(paths, manifest)
         if (
             manifest.analysis_run_id != job.analysis_run_id
-            or manifest.collection_run_id != job.collection_run_id
+            or set(manifest.collection_run_ids) != set(job.collection_run_ids)
             or manifest.project_id != job.project_id
         ):
             raise RuntimeError("Manifest identity does not match the analysis job")
@@ -259,8 +260,22 @@ class AnalysisPipeline:
             2,
         )
         project = await self.repository.project_snapshot(job.project_id)
-        collection = await self.repository.collection_summary(job.collection_run_id)
-        snapshots = await self.repository.mentions(job.collection_run_id)
+        run_summaries = [
+            await self.repository.collection_summary(run_id)
+            for run_id in job.collection_run_ids
+        ]
+        collection = {
+            "collection_run_ids": [str(run_id) for run_id in job.collection_run_ids],
+            "runs": run_summaries,
+        }
+        snapshots_by_id: dict[uuid.UUID, MentionSnapshot] = {}
+        for run_id in job.collection_run_ids:
+            for snapshot in await self.repository.mentions(run_id):
+                snapshots_by_id.setdefault(snapshot.mention_id, snapshot)
+        snapshots = sorted(
+            snapshots_by_id.values(),
+            key=lambda item: (item.published_at, str(item.mention_id)),
+        )
         self.store.write_json(project_path, project)
         self.store.write_json(collection_path, collection)
         self.store.write_jsonl(mentions_path, snapshots)
@@ -332,18 +347,75 @@ class AnalysisPipeline:
                 )
             else:
                 logger.info("Analyzing mention batch %s of %s.", index, total_batches)
-                generated = await self.llm.generate_structured(
-                    stage=stage,
-                    model=self.settings.analyzer_mention_model,
-                    fallback_models=self.settings.analyzer_fallback_model_list,
-                    system_prompt=MENTION_SYSTEM_PROMPT,
-                    user_prompt=mention_prompt(batch),
-                    response_model=MentionAnalysisBatch,
-                )
-                completed = generated.value.analyses
+                partial_path = directory / f"batch-{index:06d}.partial.jsonl"
+                completed_by_id: dict[uuid.UUID, MentionAnalysis] = {}
+                if partial_path.exists():
+                    partial = [
+                        MentionAnalysis.model_validate(item)
+                        for item in self.store.iter_jsonl(partial_path)
+                    ]
+                    _validate_partial_batch_ids(partial, expected_ids)
+                    completed_by_id.update((item.mention_id, item) for item in partial)
+                    logger.info(
+                        "Resuming mention batch %s with %s of %s mentions already "
+                        "checkpointed.",
+                        index,
+                        len(completed_by_id),
+                        len(batch),
+                    )
+
+                for attempt in range(
+                    1, self.settings.analyzer_mention_batch_max_attempts + 1
+                ):
+                    remaining = [
+                        item for item in batch if item.mention_id not in completed_by_id
+                    ]
+                    if not remaining:
+                        break
+                    generated = await self.llm.generate_structured(
+                        stage=stage,
+                        model=self.settings.analyzer_mention_model,
+                        fallback_models=self.settings.analyzer_fallback_model_list,
+                        system_prompt=MENTION_SYSTEM_PROMPT,
+                        user_prompt=(
+                            mention_prompt(remaining)
+                            if attempt == 1 and not completed_by_id
+                            else mention_retry_prompt(remaining)
+                        ),
+                        response_model=MentionAnalysisBatch,
+                    )
+                    manifest.model_usage.append(generated.usage)
+                    for analysis in generated.value.analyses:
+                        if analysis.mention_id in expected_ids:
+                            completed_by_id.setdefault(analysis.mention_id, analysis)
+                    completed = [
+                        completed_by_id[item.mention_id]
+                        for item in batch
+                        if item.mention_id in completed_by_id
+                    ]
+                    _validate_partial_batch_ids(completed, expected_ids)
+                    self.store.write_jsonl(partial_path, completed)
+                    manifest.updated_at = datetime.now(timezone.utc)
+                    self.store.save_manifest(paths, manifest)
+                    missing_count = len(expected_ids - set(completed_by_id))
+                    if missing_count:
+                        logger.warning(
+                            "Mention batch %s returned %s of %s required analyses; "
+                            "retrying the %s missing mentions.",
+                            index,
+                            len(completed_by_id),
+                            len(batch),
+                            missing_count,
+                        )
+
+                completed = [
+                    completed_by_id[item.mention_id]
+                    for item in batch
+                    if item.mention_id in completed_by_id
+                ]
                 _validate_batch_ids(completed, expected_ids)
                 self.store.write_jsonl(output_path, completed)
-                manifest.model_usage.append(generated.usage)
+                partial_path.unlink(missing_ok=True)
             all_analyses.extend(completed)
             manifest.completed_mentions = len(all_analyses)
             manifest.updated_at = datetime.now(timezone.utc)
@@ -816,9 +888,10 @@ class AnalysisPipeline:
         evidence_path = paths.final / "evidence.jsonl"
         usage_path = paths.final / "model_usage.json"
         final_payload = {
-            "schema_version": 1,
+            "schema_version": 2,
             "analysis_run_id": str(job.analysis_run_id),
             "collection_run_id": str(job.collection_run_id),
+            "collection_run_ids": [str(item) for item in job.collection_run_ids],
             "project_id": str(job.project_id),
             "project_title": project["title"],
             "analyzer_version": manifest.analyzer_version,
@@ -964,6 +1037,7 @@ class AnalysisPipeline:
             AnalysisProgressEvent(
                 analysis_run_id=job.analysis_run_id,
                 collection_run_id=job.collection_run_id,
+                collection_run_ids=job.collection_run_ids,
                 project_id=job.project_id,
                 status=status,
                 current_stage=stage,
@@ -981,6 +1055,21 @@ class AnalysisPipeline:
                 executive_report_path=executive_report_path,
                 error_message=error_message,
             )
+        )
+
+
+def _validate_partial_batch_ids(
+    analyses: list[MentionAnalysis], expected_ids: set[uuid.UUID]
+) -> None:
+    actual = [item.mention_id for item in analyses]
+    if len(actual) != len(set(actual)):
+        raise ValueError(
+            "Partial mention-analysis batch contains duplicate mention IDs"
+        )
+    unknown = set(actual) - expected_ids
+    if unknown:
+        raise ValueError(
+            f"Partial mention-analysis batch contains unknown IDs: {unknown}"
         )
 
 

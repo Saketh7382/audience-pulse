@@ -56,7 +56,12 @@ alembic upgrade head
 python -m app --worker
 ```
 
-Queue a completed collection run for the worker:
+Normally, Control Plane queues a single-run analysis automatically when collection
+completes. Operators can combine multiple completed runs through
+`POST /api/v1/projects/{project_id}/analysis` with `collection_run_ids`; the
+pipeline unions those runs and deduplicates mentions before LLM processing. The
+single-run API and CLI remain available for recovery and testing:
+
 
 ```bash
 python -m app --enqueue-run-id COLLECTION_RUN_UUID

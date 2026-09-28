@@ -138,8 +138,9 @@ class RedisAnalysisConsumer:
         except Exception as exc:
             if delivery_count < self.max_delivery_attempts:
                 logger.warning(
-                    "Audience analysis failed and will resume from its latest "
-                    "completed file checkpoint on retry."
+                    "Audience analysis paused at its latest completed checkpoint: "
+                    "%s. The worker will retry it.",
+                    exc,
                 )
                 return False
             await self._dead_letter(

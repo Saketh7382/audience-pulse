@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class StrictModel(BaseModel):
@@ -35,18 +35,35 @@ class AnalysisStage(str, Enum):
 
 
 class AnalysisJob(StrictModel):
-    schema_version: Literal[1] = 1
+    schema_version: Literal[1, 2] = 2
     analysis_run_id: uuid.UUID
-    collection_run_id: uuid.UUID
+    collection_run_id: uuid.UUID | None = None
+    collection_run_ids: list[uuid.UUID] = Field(default_factory=list, max_length=50)
     project_id: uuid.UUID
     enqueued_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
+    @model_validator(mode="after")
+    def normalize_collection_runs(self) -> "AnalysisJob":
+        run_ids = list(self.collection_run_ids)
+        if not run_ids and self.collection_run_id is not None:
+            run_ids = [self.collection_run_id]
+        if not run_ids:
+            raise ValueError("At least one collection run is required")
+        if len(set(run_ids)) != len(run_ids):
+            raise ValueError("collection_run_ids must not contain duplicates")
+        if self.collection_run_id is not None and self.collection_run_id not in run_ids:
+            raise ValueError("collection_run_id must be included in collection_run_ids")
+        self.collection_run_ids = run_ids
+        self.collection_run_id = self.collection_run_id or run_ids[0]
+        return self
+
 
 class AnalysisProgressEvent(StrictModel):
-    schema_version: Literal[1] = 1
+    schema_version: Literal[1, 2] = 2
     event_id: uuid.UUID = Field(default_factory=uuid.uuid4)
     analysis_run_id: uuid.UUID
     collection_run_id: uuid.UUID
+    collection_run_ids: list[uuid.UUID] = Field(default_factory=list)
     project_id: uuid.UUID
     status: AnalysisStatus
     current_stage: AnalysisStage

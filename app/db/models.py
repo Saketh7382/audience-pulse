@@ -10,6 +10,7 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    UniqueConstraint,
     func,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
@@ -51,19 +52,22 @@ class AnalysisRun(Base):
             "ix_analysis_runs_collection_run",
             "collection_run_id",
         ),
+        UniqueConstraint(
+            "project_id",
+            "input_signature",
+            name="uq_analysis_runs_input_signature",
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
-    project_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True),
-        ForeignKey("projects.id", ondelete="CASCADE"),
-        nullable=False,
-    )
+    # PostgreSQL owns and enforces the cross-service foreign keys. The analyzer
+    # intentionally maps these as scalar IDs so ORM flushes do not require the
+    # complete Control Plane model registry.
+    project_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
     collection_run_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True),
-        ForeignKey("project_runs.id", ondelete="CASCADE"),
-        nullable=False,
+        UUID(as_uuid=True), nullable=False
     )
+    input_signature: Mapped[str] = mapped_column(String(64), nullable=False)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="queued")
     current_stage: Mapped[str] = mapped_column(
         String(100), nullable=False, default="INITIALIZING"
@@ -102,3 +106,29 @@ class AnalysisRun(Base):
         server_default=func.now(),
         onupdate=func.now(),
     )
+
+    @property
+    def collection_run_ids(self) -> list[uuid.UUID]:
+        """Run IDs explicitly loaded by the repository from the association table."""
+        return getattr(self, "_collection_run_ids", [self.collection_run_id])
+
+
+class AnalysisRunCollectionRun(Base):
+    """Ordered collection runs included in one immutable analysis input."""
+
+    __tablename__ = "analysis_run_collection_runs"
+    __table_args__ = (
+        UniqueConstraint(
+            "analysis_run_id", "position", name="uq_analysis_run_collection_position"
+        ),
+    )
+
+    analysis_run_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("analysis_runs.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    collection_run_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True
+    )
+    position: Mapped[int] = mapped_column(Integer, nullable=False)

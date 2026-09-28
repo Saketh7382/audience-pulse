@@ -146,21 +146,28 @@ async def enqueue_run(
     analysis_run_id: uuid.UUID | None = None
     try:
         project_id = await repository.collection_run_project_id(collection_run_id)
-        analysis_run_id = uuid.uuid4()
-        store = LocalAnalysisStore(settings.analyzer_storage_root)
-        paths = store.paths(
-            project_id=project_id,
-            collection_run_id=collection_run_id,
-            analysis_run_id=analysis_run_id,
-        )
-        await repository.create(
-            analysis_run_id=analysis_run_id,
-            project_id=project_id,
-            collection_run_id=collection_run_id,
-            manifest_path=store.relative(paths.manifest),
-            analyzer_version=settings.analyzer_version,
-            prompt_bundle_version=settings.prompt_bundle_version,
-        )
+        existing = await repository.get_by_collection_run(collection_run_id)
+        if existing is not None:
+            analysis_run_id = existing.id
+            if existing.status != "failed":
+                return analysis_run_id
+            await repository.reset_failed_for_dispatch(analysis_run_id)
+        else:
+            analysis_run_id = uuid.uuid4()
+            store = LocalAnalysisStore(settings.analyzer_storage_root)
+            paths = store.paths(
+                project_id=project_id,
+                collection_run_id=collection_run_id,
+                analysis_run_id=analysis_run_id,
+            )
+            await repository.create(
+                analysis_run_id=analysis_run_id,
+                project_id=project_id,
+                collection_run_id=collection_run_id,
+                manifest_path=store.relative(paths.manifest),
+                analyzer_version=settings.analyzer_version,
+                prompt_bundle_version=settings.prompt_bundle_version,
+            )
         job = AnalysisJob(
             analysis_run_id=analysis_run_id,
             collection_run_id=collection_run_id,

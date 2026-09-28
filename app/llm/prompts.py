@@ -46,6 +46,16 @@ def mention_prompt(mentions: list[MentionSnapshot]) -> str:
     )
 
 
+def mention_retry_prompt(mentions: list[MentionSnapshot]) -> str:
+    """Ask only for analyses omitted from an otherwise valid batch response."""
+    identifiers = ", ".join(str(item.mention_id) for item in mentions)
+    return (
+        "The previous response omitted required records. Analyze only the missing "
+        "mentions below. Return exactly one analysis for each of these mention IDs "
+        f"and no others: {identifiers}.\n\n" + mention_prompt(mentions)
+    )
+
+
 def evidence_system_prompt(responsibility: str) -> str:
     return f"""
 You are the {responsibility} stage of Muvion Audience Pulse. You receive computed

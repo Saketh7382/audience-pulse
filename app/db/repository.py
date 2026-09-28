@@ -1,13 +1,14 @@
+import hashlib
 import uuid
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Any
 
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.contracts.analysis import MentionSnapshot, ModelUsageEntry
 from app.contracts.jobs import AnalysisStage, AnalysisStatus
-from app.db.models import AnalysisRun
+from app.db.models import AnalysisRun, AnalysisRunCollectionRun
 
 
 class AnalysisInputError(RuntimeError):
@@ -26,32 +27,104 @@ class AnalysisRepository:
         analysis_run_id: uuid.UUID,
         project_id: uuid.UUID,
         collection_run_id: uuid.UUID,
+        collection_run_ids: list[uuid.UUID] | None = None,
         manifest_path: str,
         analyzer_version: str,
         prompt_bundle_version: str,
     ) -> AnalysisRun:
+        run_ids = canonical_run_ids(collection_run_ids or [collection_run_id])
         async with self.sessions() as session:
-            await self._validate_collection_run(
-                session,
-                project_id=project_id,
-                collection_run_id=collection_run_id,
-            )
+            for run_id in run_ids:
+                await self._validate_collection_run(
+                    session,
+                    project_id=project_id,
+                    collection_run_id=run_id,
+                )
             row = AnalysisRun(
                 id=analysis_run_id,
                 project_id=project_id,
-                collection_run_id=collection_run_id,
+                collection_run_id=run_ids[0],
+                input_signature=input_signature(run_ids),
                 manifest_path=manifest_path,
                 analyzer_version=analyzer_version,
                 prompt_bundle_version=prompt_bundle_version,
             )
             session.add(row)
+            session.add_all(
+                AnalysisRunCollectionRun(
+                    analysis_run_id=analysis_run_id,
+                    collection_run_id=run_id,
+                    position=position,
+                )
+                for position, run_id in enumerate(run_ids)
+            )
             await session.commit()
             await session.refresh(row)
+            row._collection_run_ids = run_ids
             return row
 
     async def get(self, analysis_run_id: uuid.UUID) -> AnalysisRun | None:
         async with self.sessions() as session:
-            return await session.get(AnalysisRun, analysis_run_id)
+            row = await session.get(AnalysisRun, analysis_run_id)
+            if row is not None:
+                await self._load_collection_run_ids(session, row)
+            return row
+
+    async def get_by_input_signature(
+        self, project_id: uuid.UUID, run_ids: list[uuid.UUID]
+    ) -> AnalysisRun | None:
+        signature = input_signature(canonical_run_ids(run_ids))
+        async with self.sessions() as session:
+            row = await session.scalar(
+                select(AnalysisRun).where(
+                    AnalysisRun.project_id == project_id,
+                    AnalysisRun.input_signature == signature,
+                )
+            )
+            if row is not None:
+                await self._load_collection_run_ids(session, row)
+            return row
+
+    async def get_by_collection_run(
+        self, collection_run_id: uuid.UUID
+    ) -> AnalysisRun | None:
+        """Compatibility lookup for CLI callers that enqueue one run."""
+        project_id = await self.collection_run_project_id(collection_run_id)
+        exact = await self.get_by_input_signature(project_id, [collection_run_id])
+        if exact is not None:
+            return exact
+        async with self.sessions() as session:
+            return await session.scalar(
+                select(AnalysisRun)
+                .join(
+                    AnalysisRunCollectionRun,
+                    AnalysisRunCollectionRun.analysis_run_id == AnalysisRun.id,
+                )
+                .where(
+                    AnalysisRun.project_id == project_id,
+                    AnalysisRunCollectionRun.collection_run_id == collection_run_id,
+                )
+                .group_by(AnalysisRun.id)
+                .having(func.count(AnalysisRunCollectionRun.collection_run_id) == 1)
+                .order_by(AnalysisRun.created_at.desc())
+                .limit(1)
+            )
+
+    async def reset_failed_for_dispatch(self, analysis_run_id: uuid.UUID) -> None:
+        async with self.sessions() as session:
+            row = await session.get(AnalysisRun, analysis_run_id, with_for_update=True)
+            if row is None:
+                raise AnalysisInputError(
+                    f"Analysis run {analysis_run_id} was not found"
+                )
+            if row.status != AnalysisStatus.FAILED.value:
+                return
+            row.status = AnalysisStatus.QUEUED.value
+            row.current_stage = AnalysisStage.INITIALIZING.value
+            row.progress_pct = 0
+            row.error_message = None
+            row.completed_at = None
+            await session.commit()
 
     async def mark_progress(
         self,
@@ -298,6 +371,18 @@ class AnalysisRepository:
             return (await session.execute(statement)).scalar_one_or_none()
 
     @staticmethod
+    async def _load_collection_run_ids(session: AsyncSession, row: AnalysisRun) -> None:
+        row._collection_run_ids = list(
+            (
+                await session.scalars(
+                    select(AnalysisRunCollectionRun.collection_run_id)
+                    .where(AnalysisRunCollectionRun.analysis_run_id == row.id)
+                    .order_by(AnalysisRunCollectionRun.position)
+                )
+            ).all()
+        )
+
+    @staticmethod
     async def _validate_collection_run(
         session: AsyncSession,
         *,
@@ -337,8 +422,21 @@ def _json_mapping(value: Any) -> dict[str, Any]:
     for key, item in dict(value).items():
         if isinstance(item, uuid.UUID):
             result[key] = str(item)
-        elif isinstance(item, datetime):
+        elif isinstance(item, (date, datetime)):
             result[key] = item.isoformat()
         else:
             result[key] = item
     return result
+
+
+def canonical_run_ids(run_ids: list[uuid.UUID]) -> list[uuid.UUID]:
+    if not run_ids:
+        raise AnalysisInputError("At least one collection run is required")
+    if len(set(run_ids)) != len(run_ids):
+        raise AnalysisInputError("Collection run IDs must not contain duplicates")
+    return sorted(run_ids, key=str)
+
+
+def input_signature(run_ids: list[uuid.UUID]) -> str:
+    payload = ",".join(str(item) for item in run_ids).encode("ascii")
+    return hashlib.sha256(payload).hexdigest()

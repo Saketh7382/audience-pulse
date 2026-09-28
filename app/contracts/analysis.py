@@ -245,9 +245,10 @@ class StageManifest(StrictModel):
 
 
 class AnalysisManifest(StrictModel):
-    schema_version: Literal[1] = 1
+    schema_version: Literal[1, 2] = 2
     analysis_run_id: uuid.UUID
     collection_run_id: uuid.UUID
+    collection_run_ids: list[uuid.UUID] = Field(default_factory=list)
     project_id: uuid.UUID
     analyzer_version: str
     prompt_bundle_version: str
@@ -266,4 +267,8 @@ class AnalysisManifest(StrictModel):
     def validate_completed_count(self) -> "AnalysisManifest":
         if self.completed_mentions > self.input_mentions:
             raise ValueError("completed_mentions cannot exceed input_mentions")
+        if not self.collection_run_ids:
+            self.collection_run_ids = [self.collection_run_id]
+        if self.collection_run_id not in self.collection_run_ids:
+            raise ValueError("collection_run_id must be included in collection_run_ids")
         return self

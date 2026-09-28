@@ -67,29 +67,35 @@ class FakeRepository:
 
 
 class FakeLLM(StructuredLLMProvider):
-    def __init__(self, mention_id: uuid.UUID) -> None:
+    def __init__(
+        self, mention_id: uuid.UUID, *, omit_first_mention_response: bool = False
+    ) -> None:
         self.mention_id = mention_id
+        self.omit_first_mention_response = omit_first_mention_response
+        self.mention_calls = 0
         self.calls = []
 
     async def generate_structured(self, *, stage, response_model, **values):
         self.calls.append(stage)
         if response_model is MentionAnalysisBatch:
-            value = MentionAnalysisBatch(
-                analyses=[
-                    MentionAnalysis(
-                        mention_id=self.mention_id,
-                        language="Telugu-English code-mixed",
-                        normalized_meaning_en="The BGM is excellent.",
-                        sentiment=Sentiment.POSITIVE,
-                        sentiment_strength=SentimentStrength.STRONG,
-                        primary_emotion="excitement",
-                        positive_points=["Background score"],
-                        audience_intent="watch_theatre",
-                        is_question=False,
-                        confidence=0.95,
-                    )
-                ]
-            )
+            self.mention_calls += 1
+            analyses = [
+                MentionAnalysis(
+                    mention_id=self.mention_id,
+                    language="Telugu-English code-mixed",
+                    normalized_meaning_en="The BGM is excellent.",
+                    sentiment=Sentiment.POSITIVE,
+                    sentiment_strength=SentimentStrength.STRONG,
+                    primary_emotion="excitement",
+                    positive_points=["Background score"],
+                    audience_intent="watch_theatre",
+                    is_question=False,
+                    confidence=0.95,
+                )
+            ]
+            if self.omit_first_mention_response and self.mention_calls == 1:
+                analyses = []
+            value = MentionAnalysisBatch(analyses=analyses)
         elif response_model is ThemeResult:
             value = ThemeResult(themes=[self._finding("Background score excitement")])
         elif response_model is AssetTalentResult:
@@ -169,15 +175,18 @@ async def test_pipeline_writes_final_files_and_resumes_without_more_llm_calls(tm
         asset_url="https://youtube.com/watch?v=test",
     )
     repository = FakeRepository(mention)
-    llm = FakeLLM(mention.mention_id)
+    llm = FakeLLM(mention.mention_id, omit_first_mention_response=True)
     settings = Settings(
         openrouter_api_key="test",
         analyzer_storage_root=tmp_path,
         analyzer_mention_batch_size=1,
     )
+    first_run_id = uuid.uuid4()
+    second_run_id = uuid.uuid4()
     job = AnalysisJob(
         analysis_run_id=uuid.uuid4(),
-        collection_run_id=uuid.uuid4(),
+        collection_run_id=first_run_id,
+        collection_run_ids=[first_run_id, second_run_id],
         project_id=uuid.uuid4(),
     )
     from types import SimpleNamespace
@@ -185,6 +194,7 @@ async def test_pipeline_writes_final_files_and_resumes_without_more_llm_calls(tm
     repository.metadata = SimpleNamespace(
         project_id=job.project_id,
         collection_run_id=job.collection_run_id,
+        collection_run_ids=job.collection_run_ids,
     )
     pipeline = AnalysisPipeline(
         settings=settings,
@@ -197,14 +207,29 @@ async def test_pipeline_writes_final_files_and_resumes_without_more_llm_calls(tm
     second_path = await pipeline.run(job)
 
     assert second_path == result_path
-    assert len(llm.calls) == call_count == 5
+    assert len(llm.calls) == call_count == 6
+    assert llm.mention_calls == 2
     assert repository.failed is None
     assert repository.completed is not None
     result = json.loads(result_path.read_text())
     assert result["aggregation"]["total_mentions"] == 1
+    assert result["collection_run_ids"] == [
+        str(first_run_id),
+        str(second_run_id),
+    ]
+    # FakeRepository returns the same mention for each run. The union must
+    # analyze it only once.
+    assert (
+        len(list((result_path.parent.parent / "input" / "mentions.jsonl").open())) == 1
+    )
     assert result["executive_pulse"]["campaign_health"] == "Positive early response"
     run_root = result_path.parent.parent
     assert (run_root / "input" / "mentions.jsonl").exists()
     assert (run_root / "final" / "executive_pulse.md").exists()
     assert (run_root / "final" / "evidence.jsonl").exists()
     assert (run_root / "final" / "model_usage.json").exists()
+    assert not list(
+        (run_root / "stages" / "01_mention_analysis" / "batches").glob(
+            "*.partial.jsonl"
+        )
+    )
