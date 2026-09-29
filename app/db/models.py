@@ -68,6 +68,9 @@ class AnalysisRun(Base):
         UUID(as_uuid=True), nullable=False
     )
     input_signature: Mapped[str] = mapped_column(String(64), nullable=False)
+    baseline_analysis_run_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), nullable=True
+    )
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="queued")
     current_stage: Mapped[str] = mapped_column(
         String(100), nullable=False, default="INITIALIZING"
@@ -112,6 +115,10 @@ class AnalysisRun(Base):
         """Run IDs explicitly loaded by the repository from the association table."""
         return getattr(self, "_collection_run_ids", [self.collection_run_id])
 
+    @property
+    def incremental_collection_run_ids(self) -> list[uuid.UUID]:
+        return getattr(self, "_incremental_collection_run_ids", self.collection_run_ids)
+
 
 class AnalysisRunCollectionRun(Base):
     """Ordered collection runs included in one immutable analysis input."""
@@ -132,3 +139,4 @@ class AnalysisRunCollectionRun(Base):
         UUID(as_uuid=True), primary_key=True
     )
     position: Mapped[int] = mapped_column(Integer, nullable=False)
+    is_incremental: Mapped[bool] = mapped_column(nullable=False, default=True)

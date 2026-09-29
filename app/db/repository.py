@@ -28,11 +28,18 @@ class AnalysisRepository:
         project_id: uuid.UUID,
         collection_run_id: uuid.UUID,
         collection_run_ids: list[uuid.UUID] | None = None,
+        baseline_analysis_run_id: uuid.UUID | None = None,
+        incremental_collection_run_ids: list[uuid.UUID] | None = None,
         manifest_path: str,
         analyzer_version: str,
         prompt_bundle_version: str,
     ) -> AnalysisRun:
         run_ids = canonical_run_ids(collection_run_ids or [collection_run_id])
+        incremental_ids = set(incremental_collection_run_ids or run_ids)
+        if not incremental_ids.issubset(run_ids):
+            raise AnalysisInputError(
+                "Incremental collection runs must be part of the cumulative input"
+            )
         async with self.sessions() as session:
             for run_id in run_ids:
                 await self._validate_collection_run(
@@ -45,6 +52,7 @@ class AnalysisRepository:
                 project_id=project_id,
                 collection_run_id=run_ids[0],
                 input_signature=input_signature(run_ids),
+                baseline_analysis_run_id=baseline_analysis_run_id,
                 manifest_path=manifest_path,
                 analyzer_version=analyzer_version,
                 prompt_bundle_version=prompt_bundle_version,
@@ -55,12 +63,16 @@ class AnalysisRepository:
                     analysis_run_id=analysis_run_id,
                     collection_run_id=run_id,
                     position=position,
+                    is_incremental=run_id in incremental_ids,
                 )
                 for position, run_id in enumerate(run_ids)
             )
             await session.commit()
             await session.refresh(row)
             row._collection_run_ids = run_ids
+            row._incremental_collection_run_ids = [
+                run_id for run_id in run_ids if run_id in incremental_ids
+            ]
             return row
 
     async def get(self, analysis_run_id: uuid.UUID) -> AnalysisRun | None:
@@ -348,39 +360,19 @@ class AnalysisRepository:
             )
         return [MentionSnapshot.model_validate(dict(row)) for row in rows]
 
-    async def previous_completed_analysis(
-        self,
-        *,
-        project_id: uuid.UUID,
-        before_analysis_run_id: uuid.UUID,
-    ) -> AnalysisRun | None:
-        async with self.sessions() as session:
-            current = await session.get(AnalysisRun, before_analysis_run_id)
-            if current is None:
-                return None
-            statement = (
-                select(AnalysisRun)
-                .where(
-                    AnalysisRun.project_id == project_id,
-                    AnalysisRun.status == AnalysisStatus.COMPLETED.value,
-                    AnalysisRun.created_at < current.created_at,
-                )
-                .order_by(AnalysisRun.created_at.desc())
-                .limit(1)
-            )
-            return (await session.execute(statement)).scalar_one_or_none()
-
     @staticmethod
     async def _load_collection_run_ids(session: AsyncSession, row: AnalysisRun) -> None:
-        row._collection_run_ids = list(
-            (
-                await session.scalars(
-                    select(AnalysisRunCollectionRun.collection_run_id)
-                    .where(AnalysisRunCollectionRun.analysis_run_id == row.id)
-                    .order_by(AnalysisRunCollectionRun.position)
-                )
-            ).all()
-        )
+        associations = (
+            await session.scalars(
+                select(AnalysisRunCollectionRun)
+                .where(AnalysisRunCollectionRun.analysis_run_id == row.id)
+                .order_by(AnalysisRunCollectionRun.position)
+            )
+        ).all()
+        row._collection_run_ids = [item.collection_run_id for item in associations]
+        row._incremental_collection_run_ids = [
+            item.collection_run_id for item in associations if item.is_incremental
+        ]
 
     @staticmethod
     async def _validate_collection_run(

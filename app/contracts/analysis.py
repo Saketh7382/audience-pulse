@@ -245,10 +245,12 @@ class StageManifest(StrictModel):
 
 
 class AnalysisManifest(StrictModel):
-    schema_version: Literal[1, 2] = 2
+    schema_version: Literal[1, 2, 3] = 3
     analysis_run_id: uuid.UUID
     collection_run_id: uuid.UUID
     collection_run_ids: list[uuid.UUID] = Field(default_factory=list)
+    baseline_analysis_run_id: uuid.UUID | None = None
+    incremental_collection_run_ids: list[uuid.UUID] = Field(default_factory=list)
     project_id: uuid.UUID
     analyzer_version: str
     prompt_bundle_version: str
@@ -273,4 +275,12 @@ class AnalysisManifest(StrictModel):
             self.collection_run_ids = [self.collection_run_id]
         if self.collection_run_id not in self.collection_run_ids:
             raise ValueError("collection_run_id must be included in collection_run_ids")
+        if not self.incremental_collection_run_ids:
+            self.incremental_collection_run_ids = list(self.collection_run_ids)
+        if not set(self.incremental_collection_run_ids).issubset(
+            self.collection_run_ids
+        ):
+            raise ValueError(
+                "incremental_collection_run_ids must be included in collection_run_ids"
+            )
         return self

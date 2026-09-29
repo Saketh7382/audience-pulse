@@ -11,10 +11,12 @@ Every analysis attempt gets an independent immutable directory:
 │   ├── project_snapshot.json
 │   ├── collection_summary.json
 │   ├── mentions.jsonl
+│   ├── incremental_mentions.jsonl
 │   └── checksums.json
 ├── stages/
 │   ├── 01_mention_analysis/batches/batch-000001.jsonl
 │   ├── 02_aggregation/result.json
+│   ├── 02_aggregation/incremental_result.json
 │   ├── 03_themes/result.json
 │   ├── 04_asset_talent/result.json
 │   ├── 05_narratives_signals/result.json
@@ -45,8 +47,13 @@ only when its output has already been atomically renamed into place.
 identity, enabled connector identity, and active source identity. Connector
 settings are deliberately excluded because they can contain API credentials.
 
-`collection_summary.json` freezes the collection boundary and counts by platform
-and collection tier.
+`collection_summary.json` freezes every included collection boundary, the exact
+baseline analysis ID, newly added run IDs, and counts by platform and tier.
+
+`mentions.jsonl` is the deduplicated cumulative input.
+`incremental_mentions.jsonl` contains only mention IDs present in newly added runs
+but absent from all baseline runs. This prevents re-collected old comments from
+being reported as new audience movement.
 
 `mentions.jsonl` has one object per `run_mentions` row:
 
@@ -67,7 +74,7 @@ and collection tier.
 }
 ```
 
-`checksums.json` protects all three input files. A resumed, incomplete analysis
+`checksums.json` protects all four input files. A resumed, incomplete analysis
 fails if the supposedly immutable snapshot changed.
 
 ## Mention-analysis JSONL
@@ -86,7 +93,8 @@ never replaces the source text.
 ## Final files
 
 `audience_pulse.json` is the canonical machine-readable output. It assembles
-deterministic aggregation, themes, asset/talent response, narrative, strengths,
+cumulative and incremental deterministic aggregation, a chart-ready numeric
+`trend_snapshot`, themes, asset/talent response, narrative, strengths,
 concerns, opportunities, risks, emerging signals, information gaps, trends,
 recommendations, and Executive Pulse.
 

@@ -49,5 +49,5 @@ async def test_cli_requeues_same_failed_analysis_attempt(monkeypatch, tmp_path):
     assert payload["analysis_run_id"] == str(analysis_run_id)
     assert payload["collection_run_id"] == str(collection_run_id)
     assert payload["collection_run_ids"] == [str(collection_run_id)]
-    assert payload["schema_version"] == 2
+    assert payload["schema_version"] == 3
     redis.aclose.assert_awaited_once()

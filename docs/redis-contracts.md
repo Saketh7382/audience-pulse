@@ -9,16 +9,25 @@
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 3,
   "analysis_run_id": "d84282c5-71c3-4cf9-80eb-2a7cc97cc9b9",
   "collection_run_id": "5c7acdb7-10bc-4341-89ae-f7847ce4646b",
+  "collection_run_ids": [
+    "5c7acdb7-10bc-4341-89ae-f7847ce4646b",
+    "fcb7d284-a28b-450f-b87b-aecfe5799488"
+  ],
+  "baseline_analysis_run_id": "7a659041-d588-4445-abcd-11c46a93c707",
+  "incremental_collection_run_ids": [
+    "fcb7d284-a28b-450f-b87b-aecfe5799488"
+  ],
   "project_id": "191e459d-831a-4bed-a624-5144a98d16df",
   "enqueued_at": "2026-09-28T10:00:00Z"
 }
 ```
 
-The `analysis_runs` row must exist before publication and its project/collection
-identity must match the job. The worker rejects mismatched jobs.
+The `analysis_runs` row and ordered run associations must exist before publication.
+The worker rejects jobs whose project, cumulative inputs, baseline, or incremental
+inputs do not match durable metadata.
 
 The worker acknowledges only after final files and completed database metadata
 are durable. Failed work remains pending and is reclaimed after the configured

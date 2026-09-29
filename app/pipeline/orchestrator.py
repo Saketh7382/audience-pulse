@@ -82,9 +82,20 @@ class AnalysisPipeline:
         metadata = await self.repository.get(job.analysis_run_id)
         if metadata is None:
             raise RuntimeError(f"Analysis run {job.analysis_run_id} was not found")
-        if metadata.project_id != job.project_id or set(
-            metadata.collection_run_ids
-        ) != set(job.collection_run_ids):
+        if (
+            metadata.project_id != job.project_id
+            or set(metadata.collection_run_ids) != set(job.collection_run_ids)
+            or getattr(metadata, "baseline_analysis_run_id", None)
+            != job.baseline_analysis_run_id
+            or set(
+                getattr(
+                    metadata,
+                    "incremental_collection_run_ids",
+                    metadata.collection_run_ids,
+                )
+            )
+            != set(job.incremental_collection_run_ids)
+        ):
             raise RuntimeError("Analysis job identity does not match database metadata")
 
         paths = self.store.paths(
@@ -128,12 +139,16 @@ class AnalysisPipeline:
         paths: RunPaths,
         manifest: AnalysisManifest,
     ) -> Path:
-        project, collection, snapshots = await self._snapshot(job, paths, manifest)
+        project, collection, snapshots, incremental_snapshots = await self._snapshot(
+            job, paths, manifest
+        )
         title = project["title"]
         logger.info('Starting audience analysis for project "%s".', title)
 
         analyses = await self._mention_analysis(job, paths, manifest, snapshots)
-        aggregation = await self._aggregation(job, paths, manifest, snapshots, analyses)
+        aggregation, incremental_aggregation = await self._aggregation(
+            job, paths, manifest, snapshots, incremental_snapshots, analyses
+        )
         evidence = select_evidence(snapshots, analyses)
         valid_ids = {item.mention_id for item in snapshots}
 
@@ -181,6 +196,7 @@ class AnalysisPipeline:
             paths,
             manifest,
             aggregation,
+            incremental_aggregation,
             evidence,
             valid_ids,
         )
@@ -189,6 +205,7 @@ class AnalysisPipeline:
             paths,
             manifest,
             aggregation,
+            incremental_aggregation,
             themes,
             asset_talent,
             narrative,
@@ -203,6 +220,7 @@ class AnalysisPipeline:
             project=project,
             collection=collection,
             aggregation=aggregation,
+            incremental_aggregation=incremental_aggregation,
             themes=themes,
             asset_talent=asset_talent,
             narrative=narrative,
@@ -222,6 +240,8 @@ class AnalysisPipeline:
                 analysis_run_id=job.analysis_run_id,
                 collection_run_id=job.collection_run_id,
                 collection_run_ids=job.collection_run_ids,
+                baseline_analysis_run_id=job.baseline_analysis_run_id,
+                incremental_collection_run_ids=job.incremental_collection_run_ids,
                 project_id=job.project_id,
                 analyzer_version=self.settings.analyzer_version,
                 prompt_bundle_version=self.settings.prompt_bundle_version,
@@ -230,6 +250,9 @@ class AnalysisPipeline:
         if (
             manifest.analysis_run_id != job.analysis_run_id
             or set(manifest.collection_run_ids) != set(job.collection_run_ids)
+            or manifest.baseline_analysis_run_id != job.baseline_analysis_run_id
+            or set(manifest.incremental_collection_run_ids)
+            != set(job.incremental_collection_run_ids)
             or manifest.project_id != job.project_id
         ):
             raise RuntimeError("Manifest identity does not match the analysis job")
@@ -240,11 +263,17 @@ class AnalysisPipeline:
         job: AnalysisJob,
         paths: RunPaths,
         manifest: AnalysisManifest,
-    ) -> tuple[dict[str, Any], dict[str, Any], list[MentionSnapshot]]:
+    ) -> tuple[
+        dict[str, Any],
+        dict[str, Any],
+        list[MentionSnapshot],
+        list[MentionSnapshot],
+    ]:
         stage = "snapshot"
         project_path = paths.input / "project_snapshot.json"
         collection_path = paths.input / "collection_summary.json"
         mentions_path = paths.input / "mentions.jsonl"
+        incremental_mentions_path = paths.input / "incremental_mentions.jsonl"
         if self._stage_completed(manifest, stage):
             _verify_input_checksums(paths.input)
             return (
@@ -253,6 +282,10 @@ class AnalysisPipeline:
                 [
                     MentionSnapshot.model_validate(item)
                     for item in self.store.iter_jsonl(mentions_path)
+                ],
+                [
+                    MentionSnapshot.model_validate(item)
+                    for item in self.store.iter_jsonl(incremental_mentions_path)
                 ],
             )
 
@@ -273,22 +306,48 @@ class AnalysisPipeline:
         ]
         collection = {
             "collection_run_ids": [str(run_id) for run_id in job.collection_run_ids],
+            "baseline_analysis_run_id": (
+                str(job.baseline_analysis_run_id)
+                if job.baseline_analysis_run_id
+                else None
+            ),
+            "incremental_collection_run_ids": [
+                str(run_id) for run_id in job.incremental_collection_run_ids
+            ],
             "runs": run_summaries,
         }
         snapshots_by_id: dict[uuid.UUID, MentionSnapshot] = {}
+        incremental_candidate_ids: set[uuid.UUID] = set()
+        baseline_mention_ids: set[uuid.UUID] = set()
+        incremental_run_ids = set(job.incremental_collection_run_ids)
         for run_id in job.collection_run_ids:
-            for snapshot in await self.repository.mentions(run_id):
+            run_mentions = await self.repository.mentions(run_id)
+            for snapshot in run_mentions:
                 snapshots_by_id.setdefault(snapshot.mention_id, snapshot)
+                if run_id in incremental_run_ids:
+                    incremental_candidate_ids.add(snapshot.mention_id)
+                else:
+                    baseline_mention_ids.add(snapshot.mention_id)
         snapshots = sorted(
             snapshots_by_id.values(),
             key=lambda item: (item.published_at, str(item.mention_id)),
         )
+        incremental_ids = incremental_candidate_ids - baseline_mention_ids
+        incremental_snapshots = [
+            item for item in snapshots if item.mention_id in incremental_ids
+        ]
         self.store.write_json(project_path, project)
         self.store.write_json(collection_path, collection)
         self.store.write_jsonl(mentions_path, snapshots)
+        self.store.write_jsonl(incremental_mentions_path, incremental_snapshots)
         checksums = {
             path.name: _sha256(path)
-            for path in (project_path, collection_path, mentions_path)
+            for path in (
+                project_path,
+                collection_path,
+                mentions_path,
+                incremental_mentions_path,
+            )
         }
         self.store.write_json(paths.input / "checksums.json", checksums)
         manifest.input_mentions = len(snapshots)
@@ -301,13 +360,14 @@ class AnalysisPipeline:
                 project_path,
                 collection_path,
                 mentions_path,
+                incremental_mentions_path,
                 paths.input / "checksums.json",
             ],
             AnalysisStatus.ANALYZING,
             AnalysisStage.MENTION_ANALYSIS,
             5,
         )
-        return project, collection, snapshots
+        return project, collection, snapshots, incremental_snapshots
 
     async def _mention_analysis(
         self,
@@ -492,15 +552,21 @@ class AnalysisPipeline:
         paths: RunPaths,
         manifest: AnalysisManifest,
         snapshots: list[MentionSnapshot],
+        incremental_snapshots: list[MentionSnapshot],
         analyses: list[MentionAnalysis],
-    ) -> AggregationResult:
+    ) -> tuple[AggregationResult, AggregationResult]:
+        """Calculate cumulative and genuinely-new cohort metrics deterministically."""
         stage = "aggregation"
         output = paths.stages / "02_aggregation" / "result.json"
-        if output.exists():
+        incremental_output = paths.stages / "02_aggregation" / "incremental_result.json"
+        if output.exists() and incremental_output.exists():
             result = AggregationResult.model_validate(self.store.read_json(output))
+            incremental_result = AggregationResult.model_validate(
+                self.store.read_json(incremental_output)
+            )
         else:
             logger.info(
-                "Calculating sentiment, emotion, intent, and aspect statistics."
+                "Calculating cumulative and newly collected audience statistics."
             )
             await self._start_stage(
                 job,
@@ -512,18 +578,26 @@ class AnalysisPipeline:
                 46,
             )
             result = aggregate_mentions(snapshots, analyses)
+            incremental_ids = {item.mention_id for item in incremental_snapshots}
+            incremental_analyses = [
+                item for item in analyses if item.mention_id in incremental_ids
+            ]
+            incremental_result = aggregate_mentions(
+                incremental_snapshots, incremental_analyses
+            )
             self.store.write_json(output, result)
+            self.store.write_json(incremental_output, incremental_result)
         await self._complete_stage(
             job,
             paths,
             manifest,
             stage,
-            [output],
+            [output, incremental_output],
             AnalysisStatus.ANALYZING,
             AnalysisStage.THEME_ANALYSIS,
             50,
         )
-        return result
+        return result, incremental_result
 
     async def _themes(
         self,
@@ -646,6 +720,7 @@ class AnalysisPipeline:
         paths: RunPaths,
         manifest: AnalysisManifest,
         aggregation: AggregationResult,
+        incremental_aggregation: AggregationResult,
         evidence: list[dict[str, Any]],
         valid_ids: set[uuid.UUID],
     ) -> TrendResult:
@@ -676,9 +751,10 @@ class AnalysisPipeline:
             AnalysisStage.TREND_ANALYSIS,
             81,
         )
-        previous = await self.repository.previous_completed_analysis(
-            project_id=job.project_id,
-            before_analysis_run_id=job.analysis_run_id,
+        previous = (
+            await self.repository.get(job.baseline_analysis_run_id)
+            if job.baseline_analysis_run_id
+            else None
         )
         if previous is None or not previous.final_result_path:
             result = TrendResult(
@@ -688,7 +764,9 @@ class AnalysisPipeline:
             previous_path = self.store.resolve_relative(previous.final_result_path)
             previous_result = self.store.read_json(previous_path)
             trend_context = _build_trend_context(
-                previous_result.get("aggregation", {}), aggregation
+                previous_result.get("aggregation", {}),
+                aggregation,
+                incremental_aggregation,
             )
             generated = await self.llm.generate_structured(
                 stage=stage_key,
@@ -731,6 +809,7 @@ class AnalysisPipeline:
         paths: RunPaths,
         manifest: AnalysisManifest,
         aggregation: AggregationResult,
+        incremental_aggregation: AggregationResult,
         themes: ThemeResult,
         asset_talent: AssetTalentResult,
         narrative: NarrativeSignalResult,
@@ -792,6 +871,7 @@ class AnalysisPipeline:
             ),
             context={
                 "aggregates": aggregation.model_dump(mode="json"),
+                "new_mentions_only": incremental_aggregation.model_dump(mode="json"),
                 "themes": themes.model_dump(mode="json"),
                 "asset_and_talent": asset_talent.model_dump(mode="json"),
                 "narratives_and_signals": narrative.model_dump(mode="json"),
@@ -909,6 +989,7 @@ class AnalysisPipeline:
         project: dict[str, Any],
         collection: dict[str, Any],
         aggregation: AggregationResult,
+        incremental_aggregation: AggregationResult,
         themes: ThemeResult,
         asset_talent: AssetTalentResult,
         narrative: NarrativeSignalResult,
@@ -924,10 +1005,18 @@ class AnalysisPipeline:
         evidence_path = paths.final / "evidence.jsonl"
         usage_path = paths.final / "model_usage.json"
         final_payload = {
-            "schema_version": 2,
+            "schema_version": 3,
             "analysis_run_id": str(job.analysis_run_id),
             "collection_run_id": str(job.collection_run_id),
             "collection_run_ids": [str(item) for item in job.collection_run_ids],
+            "baseline_analysis_run_id": (
+                str(job.baseline_analysis_run_id)
+                if job.baseline_analysis_run_id
+                else None
+            ),
+            "incremental_collection_run_ids": [
+                str(item) for item in job.incremental_collection_run_ids
+            ],
             "project_id": str(job.project_id),
             "project_title": project["title"],
             "analyzer_version": manifest.analyzer_version,
@@ -939,6 +1028,10 @@ class AnalysisPipeline:
             },
             "collection_summary": collection,
             "aggregation": aggregation.model_dump(mode="json"),
+            "incremental_aggregation": incremental_aggregation.model_dump(mode="json"),
+            "trend_snapshot": _build_metric_snapshot(
+                job, collection, aggregation, incremental_aggregation
+            ),
             "themes": themes.model_dump(mode="json"),
             "asset_talent": asset_talent.model_dump(mode="json"),
             "narratives_signals": narrative.model_dump(mode="json"),
@@ -1149,7 +1242,9 @@ def _verify_input_checksums(input_directory: Path) -> None:
 
 
 def _build_trend_context(
-    previous: dict[str, Any], current: AggregationResult
+    previous: dict[str, Any],
+    current: AggregationResult,
+    incremental: AggregationResult,
 ) -> dict[str, Any]:
     previous_sentiment = {
         item["key"]: float(item["percentage"])
@@ -1170,4 +1265,45 @@ def _build_trend_context(
         "sentiment_percentage_point_changes": sentiment_deltas,
         "previous_aspect_performance": previous_aspects,
         "current_aspect_performance": current_aspects,
+        "new_mentions_only": incremental.model_dump(mode="json"),
+    }
+
+
+def _build_metric_snapshot(
+    job: AnalysisJob,
+    collection: dict[str, Any],
+    cumulative: AggregationResult,
+    incremental: AggregationResult,
+) -> dict[str, Any]:
+    """Build stable numeric data that a UI can chart without parsing LLM prose."""
+    runs = collection.get("runs", [])
+    since_values = [
+        item.get("collection_since") for item in runs if item.get("collection_since")
+    ]
+    until_values = [
+        item.get("collection_until") for item in runs if item.get("collection_until")
+    ]
+    return {
+        "analysis_run_id": str(job.analysis_run_id),
+        "baseline_analysis_run_id": (
+            str(job.baseline_analysis_run_id) if job.baseline_analysis_run_id else None
+        ),
+        "period_start": min(since_values) if since_values else None,
+        "period_end": max(until_values) if until_values else None,
+        "cumulative_total_mentions": cumulative.total_mentions,
+        "new_total_mentions": incremental.total_mentions,
+        "cumulative_sentiment_percentages": distribution_map(
+            cumulative.sentiment_distribution
+        ),
+        "new_sentiment_percentages": distribution_map(
+            incremental.sentiment_distribution
+        ),
+        "cumulative_emotion_percentages": distribution_map(
+            cumulative.emotion_distribution
+        ),
+        "new_emotion_percentages": distribution_map(incremental.emotion_distribution),
+        "cumulative_intent_percentages": distribution_map(
+            cumulative.intent_distribution
+        ),
+        "new_intent_percentages": distribution_map(incremental.intent_distribution),
     }

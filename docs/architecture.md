@@ -14,9 +14,10 @@ publishes analysis job                                      writes result files
 consumes progress event  <-                                 publishes progress
 ```
 
-Analysis starts only after every `project_run_tasks` row for the selected
-collection run is `completed`. The snapshot query is always scoped through
-`run_mentions`; it does not accidentally include comments from a different run.
+Analysis starts only from completed collection runs whose connector tasks all
+succeeded. Control Plane resolves the cumulative run set and the largest exact
+completed subset as its baseline. Snapshot queries remain scoped through
+`run_mentions`; cumulative and new-only inputs are both deduplicated by mention ID.
 
 ## Runtime components
 
@@ -25,7 +26,7 @@ collection run is `completed`. The snapshot query is always scoped through
 - `app/llm`: provider-neutral structured inference and the OpenRouter adapter.
 - `app/storage`: atomic local file operations and per-run process locks.
 - `app/pipeline`: resumable stages, deterministic aggregation, evidence validation,
-  trend comparison, and final file assembly.
+  exact-baseline trend comparison, cumulative/new metrics, and final assembly.
 - `app/messaging`: Redis Streams delivery, retry, reclaim, acknowledgement, events,
   and dead-letter behavior.
 - `app/worker.py`: dependency composition for worker and direct execution modes.

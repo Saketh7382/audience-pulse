@@ -35,10 +35,12 @@ class AnalysisStage(str, Enum):
 
 
 class AnalysisJob(StrictModel):
-    schema_version: Literal[1, 2] = 2
+    schema_version: Literal[1, 2, 3] = 3
     analysis_run_id: uuid.UUID
     collection_run_id: uuid.UUID | None = None
-    collection_run_ids: list[uuid.UUID] = Field(default_factory=list, max_length=50)
+    collection_run_ids: list[uuid.UUID] = Field(default_factory=list)
+    baseline_analysis_run_id: uuid.UUID | None = None
+    incremental_collection_run_ids: list[uuid.UUID] = Field(default_factory=list)
     project_id: uuid.UUID
     enqueued_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
@@ -53,13 +55,23 @@ class AnalysisJob(StrictModel):
             raise ValueError("collection_run_ids must not contain duplicates")
         if self.collection_run_id is not None and self.collection_run_id not in run_ids:
             raise ValueError("collection_run_id must be included in collection_run_ids")
+        incremental_ids = list(self.incremental_collection_run_ids) or run_ids
+        if len(set(incremental_ids)) != len(incremental_ids):
+            raise ValueError(
+                "incremental_collection_run_ids must not contain duplicates"
+            )
+        if not set(incremental_ids).issubset(run_ids):
+            raise ValueError(
+                "incremental_collection_run_ids must be included in collection_run_ids"
+            )
         self.collection_run_ids = run_ids
         self.collection_run_id = self.collection_run_id or run_ids[0]
+        self.incremental_collection_run_ids = incremental_ids
         return self
 
 
 class AnalysisProgressEvent(StrictModel):
-    schema_version: Literal[1, 2] = 2
+    schema_version: Literal[1, 2, 3] = 3
     event_id: uuid.UUID = Field(default_factory=uuid.uuid4)
     analysis_run_id: uuid.UUID
     collection_run_id: uuid.UUID

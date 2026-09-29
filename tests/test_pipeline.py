@@ -62,9 +62,6 @@ class FakeRepository:
     async def mark_failed(self, analysis_run_id, error):
         self.failed = error
 
-    async def previous_completed_analysis(self, **values):
-        return None
-
 
 class FakeLLM(StructuredLLMProvider):
     def __init__(
@@ -213,6 +210,9 @@ async def test_pipeline_writes_final_files_and_resumes_without_more_llm_calls(tm
     assert repository.completed is not None
     result = json.loads(result_path.read_text())
     assert result["aggregation"]["total_mentions"] == 1
+    assert result["incremental_aggregation"]["total_mentions"] == 1
+    assert result["trend_snapshot"]["new_total_mentions"] == 1
+    assert result["baseline_analysis_run_id"] is None
     assert result["collection_run_ids"] == [
         str(first_run_id),
         str(second_run_id),
@@ -225,6 +225,7 @@ async def test_pipeline_writes_final_files_and_resumes_without_more_llm_calls(tm
     assert result["executive_pulse"]["campaign_health"] == "Positive early response"
     run_root = result_path.parent.parent
     assert (run_root / "input" / "mentions.jsonl").exists()
+    assert (run_root / "input" / "incremental_mentions.jsonl").exists()
     assert (run_root / "final" / "executive_pulse.md").exists()
     assert (run_root / "final" / "evidence.jsonl").exists()
     assert (run_root / "final" / "model_usage.json").exists()
@@ -259,3 +260,68 @@ async def test_pipeline_writes_final_files_and_resumes_without_more_llm_calls(tm
     assert second_llm.mention_calls == 0
     assert len(second_llm.calls) == 4
     assert cached_result["mention_analysis_cache"] == {"hits": 1, "misses": 0}
+
+
+@pytest.mark.asyncio
+async def test_snapshot_excludes_recollected_baseline_mentions_from_new_cohort(
+    tmp_path,
+):
+    old_run_id = uuid.uuid4()
+    new_run_id = uuid.uuid4()
+    baseline_id = uuid.uuid4()
+    shared = MentionSnapshot(
+        mention_id=uuid.uuid4(),
+        asset_id=uuid.uuid4(),
+        platform="youtube_public",
+        record_type="comment",
+        text="An older comment collected again",
+        published_at=datetime.now(timezone.utc),
+        collection_tier="target_assets",
+        asset_type="trailer",
+        asset_url="https://youtube.com/watch?v=shared",
+    )
+    genuinely_new = shared.model_copy(
+        update={
+            "mention_id": uuid.uuid4(),
+            "text": "A genuinely new comment",
+        }
+    )
+
+    class CohortRepository(FakeRepository):
+        async def mentions(self, collection_run_id):
+            if collection_run_id == old_run_id:
+                return [shared]
+            return [shared, genuinely_new]
+
+    repository = CohortRepository(shared)
+    settings = Settings(openrouter_api_key="test", analyzer_storage_root=tmp_path)
+    job = AnalysisJob(
+        analysis_run_id=uuid.uuid4(),
+        collection_run_id=old_run_id,
+        collection_run_ids=[old_run_id, new_run_id],
+        baseline_analysis_run_id=baseline_id,
+        incremental_collection_run_ids=[new_run_id],
+        project_id=uuid.uuid4(),
+    )
+    store = LocalAnalysisStore(tmp_path)
+    pipeline = AnalysisPipeline(
+        settings=settings,
+        repository=repository,
+        store=store,
+        llm=FakeLLM(shared.mention_id),
+    )
+    paths = store.paths(
+        project_id=job.project_id,
+        collection_run_id=job.collection_run_id,
+        analysis_run_id=job.analysis_run_id,
+    )
+    store.initialize(paths)
+    manifest = pipeline._load_or_create_manifest(job, paths)
+
+    _, _, cumulative, incremental = await pipeline._snapshot(job, paths, manifest)
+
+    assert {item.mention_id for item in cumulative} == {
+        shared.mention_id,
+        genuinely_new.mention_id,
+    }
+    assert [item.mention_id for item in incremental] == [genuinely_new.mention_id]

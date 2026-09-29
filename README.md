@@ -1,9 +1,10 @@
 # Muvion Audience Pulse
 
 `audience-pulse` is the independent analysis service between harvested audience
-conversation and Muvion's Release Pulse intelligence. It freezes one completed
-collection run, analyzes it through small evidence-backed stages, and writes
-structured files for the business/reporting layer.
+conversation and Muvion's Release Pulse intelligence. It freezes the cumulative
+set of completed project runs plus a genuinely-new mention cohort, analyzes them
+through small evidence-backed stages, and writes structured files for the
+business/reporting layer.
 
 ## Responsibilities
 
@@ -19,7 +20,7 @@ structured files for the business/reporting layer.
 ```text
 run_mentions snapshot
   -> mention understanding (LLM, immutable batches)
-  -> deterministic aggregation (Python)
+  -> cumulative + new-cohort deterministic aggregation (Python)
   -> themes (LLM)
   -> asset and talent response (LLM)
   -> narratives and signals (LLM)
@@ -56,11 +57,16 @@ alembic upgrade head
 python -m app --worker
 ```
 
-Normally, Control Plane queues a single-run analysis automatically when collection
-completes. Operators can combine multiple completed runs through
-`POST /api/v1/projects/{project_id}/analysis` with `collection_run_ids`; the
-pipeline unions those runs and deduplicates mentions before LLM processing. The
-single-run API and CLI remain available for recovery and testing:
+Normally, Control Plane automatically resolves all completed project collection
+runs and queues a cumulative analysis when collection completes. The same flow is
+exposed as bodyless `POST /api/v1/projects/{project_id}/analysis`; callers never
+select run IDs. The job still carries immutable run IDs internally for lineage.
+
+If the prior Pulse covered runs 1–4 and run 5 is now complete, the next Pulse
+covers runs 1–5 and names the 1–4 Pulse as its exact baseline. Mentions already
+seen in runs 1–4 are excluded from the run-5 incremental cohort, even if run 5
+re-associated them. Mention-level cache entries avoid repeating classification.
+The explicit single-run CLI remains available only for recovery and testing:
 
 
 ```bash
