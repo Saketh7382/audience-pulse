@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 class MentionCacheEntry(StrictModel):
     """One reusable mention result bound to its exact input and analysis contract."""
 
-    schema_version: Literal[1] = 1
+    schema_version: Literal[1, 2] = 2
     mention_id: uuid.UUID
     input_fingerprint: str
     analyzer_version: str
@@ -71,13 +71,22 @@ class MentionAnalysisCache:
             return None
         if (
             entry.mention_id != snapshot.mention_id
-            or entry.input_fingerprint != self._fingerprint(snapshot)
+            or entry.input_fingerprint
+            != (
+                self._legacy_fingerprint(snapshot)
+                if entry.schema_version == 1
+                else self._fingerprint(snapshot)
+            )
             or entry.analyzer_version != self.analyzer_version
             or entry.prompt_bundle_version != self.prompt_bundle_version
             or entry.requested_model != self.requested_model
             or entry.analysis.mention_id != snapshot.mention_id
         ):
             return None
+        if entry.schema_version == 1:
+            # Upgrade exact legacy hits in place. Future metric refreshes can then
+            # reuse the semantic result without another model call.
+            self.put(snapshot, entry.analysis)
         return entry.analysis
 
     def put(self, snapshot: MentionSnapshot, analysis: MentionAnalysis) -> None:
@@ -107,6 +116,29 @@ class MentionAnalysisCache:
 
     @staticmethod
     def _fingerprint(snapshot: MentionSnapshot) -> str:
+        """Hash only fields supplied to mention understanding prompts.
+
+        Likes, reply counts, URLs, discovery tier, and publication timestamps can
+        change or vary between runs but cannot change the semantic classification.
+        """
+        semantic_input = {
+            "mention_id": str(snapshot.mention_id),
+            "platform": snapshot.platform,
+            "record_type": snapshot.record_type,
+            "text": snapshot.text,
+            "asset_type": snapshot.asset_type,
+            "asset_title": snapshot.asset_title,
+        }
+        payload = json.dumps(
+            semantic_input,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        return hashlib.sha256(payload).hexdigest()
+
+    @staticmethod
+    def _legacy_fingerprint(snapshot: MentionSnapshot) -> str:
         payload = json.dumps(
             snapshot.model_dump(mode="json"),
             ensure_ascii=False,

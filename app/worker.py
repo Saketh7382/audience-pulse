@@ -1,3 +1,5 @@
+import json
+import logging
 import os
 import socket
 import uuid
@@ -13,6 +15,8 @@ from app.messaging.consumer import RedisAnalysisConsumer
 from app.messaging.publisher import RedisAnalysisEventPublisher
 from app.pipeline.orchestrator import AnalysisPipeline
 from app.storage.local import LocalAnalysisStore
+
+logger = logging.getLogger(__name__)
 
 
 def consumer_name() -> str:
@@ -69,6 +73,21 @@ class WorkerResources:
             pending_idle_ms=self.settings.redis_pending_idle_ms,
             max_delivery_attempts=self.settings.redis_max_delivery_attempts,
             handler=self.pipeline.run,
+            dead_letter_handler=self._mark_dead_lettered,
+        )
+
+    async def _mark_dead_lettered(self, payload: str, error: str) -> None:
+        """Keep database lifecycle state consistent with terminal Redis handling."""
+        try:
+            value = json.loads(payload)
+            analysis_run_id = uuid.UUID(str(value["analysis_run_id"]))
+        except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+            logger.error(
+                "Dead-lettered analysis payload has no usable analysis_run_id."
+            )
+            return
+        await self.repository.mark_failed(
+            analysis_run_id, f"Analysis job dead-lettered: {error}"
         )
 
     async def close(self) -> None:

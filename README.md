@@ -96,7 +96,9 @@ pytest -q
 The expensive per-mention structured result is cached below
 `.analyzer-data/cache/mention-analysis/`. Cache entries are isolated by analyzer
 version, prompt-bundle version, and requested model, and each entry includes a
-fingerprint of the immutable mention snapshot.
+fingerprint of only the fields sent to the mention-analysis prompt. Mutable
+engagement counters, collection timestamps, and URLs do not invalidate an
+otherwise identical analytical result.
 
 A later analysis reuses matching mention results without an OpenRouter call and
 runs the model only for new or changed mentions. Project-level themes, narrative,
@@ -107,6 +109,11 @@ written to the manifest and final `audience_pulse.json`.
 Changing `ANALYZER_VERSION`, `PROMPT_BUNDLE_VERSION`, or
 `ANALYZER_MENTION_MODEL` creates a new cache namespace instead of silently
 reusing results produced under a different analytical contract.
+
+Worker retries are bounded. After the final failure, the worker writes the job to
+the dead-letter stream, marks the corresponding `analysis_runs` row as `failed`,
+and only then acknowledges the source message. The Control Plane retry endpoint
+can requeue that exact immutable attempt.
 
 ## Storage
 

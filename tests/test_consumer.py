@@ -19,7 +19,7 @@ class FakeRedis:
         return "1-0"
 
 
-def consumer(redis, handler, attempts=3):
+def consumer(redis, handler, attempts=3, dead_letter_handler=None):
     return RedisAnalysisConsumer(
         redis,
         stream="jobs",
@@ -32,6 +32,7 @@ def consumer(redis, handler, attempts=3):
         pending_idle_ms=1,
         max_delivery_attempts=attempts,
         handler=handler,
+        dead_letter_handler=dead_letter_handler,
     )
 
 
@@ -99,3 +100,36 @@ async def test_invalid_job_is_dead_lettered_and_acknowledged():
     assert result is False
     assert redis.acked == [("jobs", "workers", "bad-1")]
     assert redis.dead_letters[0][0] == "dead"
+
+
+@pytest.mark.asyncio
+async def test_dead_letter_callback_runs_before_message_acknowledgement():
+    redis = FakeRedis()
+    reconciled = []
+
+    async def handler(job):
+        raise RuntimeError("permanent provider failure")
+
+    async def dead_letter_handler(payload, error):
+        # The callback observes no ACK yet, so a failed database reconciliation
+        # cannot silently lose the Redis job.
+        assert redis.acked == []
+        reconciled.append((payload, error))
+
+    job = AnalysisJob(
+        analysis_run_id=uuid.uuid4(),
+        collection_run_id=uuid.uuid4(),
+        project_id=uuid.uuid4(),
+    )
+    target = consumer(
+        redis, handler, attempts=2, dead_letter_handler=dead_letter_handler
+    )
+
+    await target._process_message(
+        "2-0", {"payload": job.model_dump_json()}, delivery_count=2
+    )
+
+    assert len(reconciled) == 1
+    assert str(job.analysis_run_id) in reconciled[0][0]
+    assert "attempts exhausted" in reconciled[0][1]
+    assert redis.acked == [("jobs", "workers", "2-0")]

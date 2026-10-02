@@ -10,6 +10,7 @@ from app.contracts.jobs import AnalysisJob
 
 logger = logging.getLogger(__name__)
 AnalysisHandler = Callable[[AnalysisJob], Awaitable[object]]
+DeadLetterHandler = Callable[[str, str], Awaitable[None]]
 
 
 class RedisAnalysisConsumer:
@@ -29,6 +30,7 @@ class RedisAnalysisConsumer:
         pending_idle_ms: int,
         max_delivery_attempts: int,
         handler: AnalysisHandler,
+        dead_letter_handler: DeadLetterHandler | None = None,
     ) -> None:
         self.client = client
         self.stream = stream
@@ -41,6 +43,7 @@ class RedisAnalysisConsumer:
         self.pending_idle_ms = pending_idle_ms
         self.max_delivery_attempts = max_delivery_attempts
         self.handler = handler
+        self.dead_letter_handler = dead_letter_handler
 
     async def ensure_consumer_group(self) -> None:
         try:
@@ -181,3 +184,5 @@ class RedisAnalysisConsumer:
             maxlen=self.stream_maxlen,
             approximate=True,
         )
+        if self.dead_letter_handler is not None:
+            await self.dead_letter_handler(payload, error)
